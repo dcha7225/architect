@@ -450,51 +450,18 @@ textarea {
   font-size: 0.84rem;
 }
 
-.graph-builder {
-  display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: 0.8rem;
-  min-height: 0;
-  flex: 1;
-}
-
-.graph-palette {
-  border-radius: 18px;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
-  padding: 0.8rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-}
-
-.graph-palette-item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.28rem;
-  text-align: left;
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(36, 48, 64, 0.78), rgba(20, 28, 38, 0.92));
-  padding: 0.85rem 0.9rem;
-  cursor: grab;
-}
-
-.graph-palette-item:active,
-.graph-palette-item.dragging {
-  cursor: grabbing;
-}
-
-.graph-palette-item__title {
+.add-node-btn {
+  background: linear-gradient(135deg, rgba(109, 211, 168, 0.3), rgba(129, 240, 194, 0.2));
+  border-color: var(--accent);
+  color: var(--accent-strong);
   font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.55rem 1.1rem;
 }
 
-.graph-palette-item__description {
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-  line-height: 1.4;
+.add-node-btn:hover {
+  background: linear-gradient(135deg, rgba(109, 211, 168, 0.45), rgba(129, 240, 194, 0.3));
+  box-shadow: 0 0 12px rgba(109, 211, 168, 0.25);
 }
 
 .graph-supporting {
@@ -556,6 +523,40 @@ textarea {
   color: var(--text-secondary);
   white-space: pre-wrap;
   line-height: 1.35;
+}
+
+.graph-node-card.editing {
+  box-shadow: 0 0 0 2px rgba(109, 211, 168, 0.6), 0 22px 38px rgba(0, 0, 0, 0.28);
+}
+
+.graph-node-card__title-input,
+.graph-node-card__body-input {
+  width: 100%;
+  border: 1px solid rgba(109, 211, 168, 0.35);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text-primary);
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+}
+
+.graph-node-card__title-input {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.graph-node-card__body-input {
+  margin-top: 0.4rem;
+  font-size: 0.88rem;
+  resize: none;
+  min-height: 0;
+  line-height: 1.35;
+}
+
+.graph-node-card__title-input:focus,
+.graph-node-card__body-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .graph-group-frame {
@@ -775,20 +776,6 @@ textarea {
 @media (max-width: 1200px) {
   .workspace-grid {
     grid-template-columns: 240px minmax(0, 1fr);
-  }
-
-  .graph-builder {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .graph-palette {
-    flex-direction: row;
-    overflow: auto;
-  }
-
-  .graph-palette-item {
-    min-width: 200px;
   }
 
   .inspector {

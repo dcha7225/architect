@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { argv, cwd, exit } from "node:process";
+import path from "node:path";
+import { argv, cwd, env, exit } from "node:process";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
@@ -12,7 +13,11 @@ function getWorkspaceRoot(): string {
     if (!workspace) {
       throw new Error("Missing value for --workspace");
     }
-    return workspace;
+    return path.resolve(workspace);
+  }
+
+  if (env.PLANNER_WORKSPACE) {
+    return path.resolve(env.PLANNER_WORKSPACE);
   }
 
   return cwd();
@@ -23,7 +28,9 @@ async function main(): Promise<void> {
   const server = createPlannerMcpServer(workspaceRoot);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`Project Design Planner MCP server ready for ${workspaceRoot}`);
+  console.error(`Project Design Planner MCP server ready`);
+  console.error(`  workspace: ${workspaceRoot}`);
+  console.error(`  docs root: ${path.join(workspaceRoot, ".project-docs")}`);
 }
 
 main().catch((error: unknown) => {

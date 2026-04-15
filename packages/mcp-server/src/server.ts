@@ -17,8 +17,72 @@ import * as z from "zod/v4";
 
 import type { PlannerEntry } from "@project-design-planner/planner-core";
 
-const metadataInputSchema = z.record(z.string(), z.unknown());
-const graphInputSchema = z.record(z.string(), z.unknown());
+const metadataInputSchema = z
+  .object({
+    title: z.string().optional().describe("Human-readable title for the entry."),
+    tags: z.array(z.string()).optional().describe("Categorization tags, e.g. ['architecture', 'v2']."),
+    summary: z.string().optional().describe("One-line summary of the entry's purpose."),
+  })
+  .catchall(z.unknown())
+  .describe("Entry metadata. title, tags, and summary are standard; extra keys are preserved.");
+
+const graphNodeInputSchema = z
+  .object({
+    id: z.string().min(1).describe("Unique node identifier, e.g. 'api-gateway'."),
+    label: z.string().min(1).describe("Display name shown on the node."),
+    position: z
+      .object({
+        x: z.number().describe("Horizontal canvas position in pixels."),
+        y: z.number().describe("Vertical canvas position in pixels."),
+      })
+      .describe("Canvas position. Space nodes ~200-250px apart for readability."),
+    body: z.string().optional().describe("Optional longer description shown below the label."),
+    color: z.string().optional().describe("CSS color for the node border, e.g. '#6dd3a8'."),
+    metadata: z.record(z.string(), z.unknown()).optional().describe("Arbitrary key-value metadata."),
+    annotations: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        "Semantic annotations that improve compile_context output. Common keys: kind (component | service | database | api | queue | agent), role, constraint, priority.",
+      ),
+    links: z
+      .array(z.string())
+      .optional()
+      .describe("Paths to related docs or graphs, e.g. ['notes/api-spec.md']."),
+  })
+  .describe("A node in the graph canvas representing a component, concept, or design element.");
+
+const graphEdgeInputSchema = z
+  .object({
+    id: z.string().min(1).describe("Unique edge identifier, e.g. 'edge-api-to-db'."),
+    source: z.string().min(1).describe("ID of the source node."),
+    target: z.string().min(1).describe("ID of the target node."),
+    label: z.string().optional().describe("Relationship label shown on the edge, e.g. 'calls', 'depends on'."),
+    color: z.string().optional().describe("CSS color for the edge stroke."),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    annotations: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("Semantic annotations. Common keys: kind (dependency | dataflow | calls | triggers)."),
+  })
+  .describe("A directed edge connecting two nodes.");
+
+const graphInputSchema = z
+  .object({
+    version: z.number().int().positive().optional().describe("Schema version. Always 1 for now."),
+    metadata: metadataInputSchema.optional().describe("Graph-level metadata (title, tags, summary)."),
+    viewport: z
+      .object({
+        x: z.number(),
+        y: z.number(),
+        zoom: z.number(),
+      })
+      .optional()
+      .describe("Saved canvas viewport. Omit to use defaults."),
+    nodes: z.array(graphNodeInputSchema).optional().describe("Array of graph nodes."),
+    edges: z.array(graphEdgeInputSchema).optional().describe("Array of directed edges between nodes."),
+  })
+  .describe("A planner graph artifact with nodes, directed edges, and metadata.");
 
 function serializeResult(value: unknown): { content: Array<{ type: "text"; text: string }> } {
   return {
@@ -69,9 +133,15 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
   server.registerTool(
     "list_entries",
     {
-      description: "List planning docs, graph artifacts, and folders inside .project-docs.",
+      description:
+        "List all planning docs, graph artifacts, and folders in the .project-docs/ workspace. " +
+        "Returns an array of entry summaries with path, kind (doc | graph | folder), title, summary, tags, and updatedAt. " +
+        "Call this first to discover what exists before reading or updating entries.",
       inputSchema: {
-        includeArchived: z.boolean().optional(),
+        includeArchived: z
+          .boolean()
+          .optional()
+          .describe("Include entries under .archive/. Defaults to false."),
       },
     },
     async ({ includeArchived }) => {
@@ -83,10 +153,17 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
   server.registerTool(
     "get_entry",
     {
-      description: "Read a Markdown planning doc, graph artifact, or folder metadata from .project-docs.",
+      description:
+        "Read the full content of a planning entry. " +
+        "For docs: returns the full Markdown content, metadata (title, tags, summary), and revision. " +
+        "For graphs: returns the full graph object with nodes (id, label, position, body, annotations) and edges (id, source, target, label, annotations). " +
+        "Use list_entries first to discover available paths.",
       inputSchema: {
-        path: z.string().min(1),
-        includeArchived: z.boolean().optional(),
+        path: z
+          .string()
+          .min(1)
+          .describe("Entry path relative to .project-docs/, e.g. 'notes/api-spec.md' or 'architecture.planner-graph.json'."),
+        includeArchived: z.boolean().optional().describe("Allow reading archived entries. Defaults to false."),
       },
     },
     async ({ path, includeArchived }) => {
@@ -98,10 +175,16 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
   server.registerTool(
     "create_doc",
     {
-      description: "Create a new Markdown planning doc with optional metadata.",
+      description:
+        "Create a new Markdown planning doc. The .md extension is added automatically if omitted. " +
+        "Nested paths like 'notes/api-spec' create intermediate folders. " +
+        "Returns the created entry with its resolved path and metadata.",
       inputSchema: {
-        path: z.string().min(1),
-        content: z.string().optional(),
+        path: z
+          .string()
+          .min(1)
+          .describe("Entry path relative to .project-docs/, e.g. 'notes/api-spec'. The .md extension is added automatically."),
+        content: z.string().optional().describe("Markdown body content. Defaults to empty."),
         metadata: metadataInputSchema.optional(),
       },
     },
@@ -114,9 +197,18 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
   server.registerTool(
     "create_graph",
     {
-      description: "Create a new app-managed planner graph artifact.",
+      description:
+        "Create a new graph design artifact for modeling architecture, data flows, or system relationships. " +
+        "The .planner-graph.json extension is added automatically if omitted. " +
+        "If graph is omitted, an empty graph is created. " +
+        "Returns the created entry with its resolved path and full graph data.",
       inputSchema: {
-        path: z.string().min(1),
+        path: z
+          .string()
+          .min(1)
+          .describe(
+            "Entry path relative to .project-docs/, e.g. 'architecture' or 'designs/auth-flow'. Extension is added automatically.",
+          ),
         graph: graphInputSchema.optional(),
       },
     },
@@ -131,11 +223,16 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
   server.registerTool(
     "update_doc",
     {
-      description: "Overwrite a Markdown planning doc with new content and optional metadata.",
+      description:
+        "Replace the full Markdown content of an existing planning doc. " +
+        "This is a full overwrite — not a patch. Pass the complete desired content. " +
+        "Metadata fields are merged with existing metadata; omitted fields are preserved.",
       inputSchema: {
-        path: z.string().min(1),
-        content: z.string(),
-        metadata: metadataInputSchema.optional(),
+        path: z.string().min(1).describe("Path of the existing doc to update."),
+        content: z.string().describe("Complete new Markdown content (replaces the entire body)."),
+        metadata: metadataInputSchema
+          .optional()
+          .describe("Metadata fields to merge. Existing fields not included here are preserved."),
       },
     },
     async ({ path, content, metadata }) => {
@@ -147,10 +244,13 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
   server.registerTool(
     "update_graph",
     {
-      description: "Overwrite a graph artifact with new graph data.",
+      description:
+        "Replace the full graph data of an existing graph artifact. " +
+        "This is a full overwrite — pass the complete graph with all nodes and edges. " +
+        "To modify a graph: first get_entry to read the current state, edit the nodes/edges, then update_graph with the full result.",
       inputSchema: {
-        path: z.string().min(1),
-        graph: graphInputSchema,
+        path: z.string().min(1).describe("Path of the existing graph to update."),
+        graph: graphInputSchema.describe("Complete replacement graph with all nodes and edges."),
       },
     },
     async ({ path, graph }) => {
@@ -164,10 +264,12 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
   server.registerTool(
     "move_entry",
     {
-      description: "Rename or move a doc, graph, or folder within the planning workspace.",
+      description:
+        "Rename or move a doc, graph, or folder to a new path within .project-docs/. " +
+        "Both paths are relative to .project-docs/.",
       inputSchema: {
-        path: z.string().min(1),
-        newPath: z.string().min(1),
+        path: z.string().min(1).describe("Current entry path."),
+        newPath: z.string().min(1).describe("Desired new path."),
       },
     },
     async ({ path, newPath }) => {
@@ -179,9 +281,12 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
   server.registerTool(
     "archive_entry",
     {
-      description: "Archive a planning entry by moving it under .project-docs/.archive.",
+      description:
+        "Soft-delete a planning entry by moving it under .project-docs/.archive/. " +
+        "Archived entries are excluded from list_entries and compile_context by default. " +
+        "Use restore_entry to undo.",
       inputSchema: {
-        path: z.string().min(1),
+        path: z.string().min(1).describe("Path of the entry to archive."),
       },
     },
     async ({ path }) => {
@@ -193,10 +298,13 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
   server.registerTool(
     "restore_entry",
     {
-      description: "Restore an archived planning entry back into the active workspace.",
+      description: "Restore a previously archived entry back into the active workspace.",
       inputSchema: {
-        path: z.string().min(1),
-        restorePath: z.string().optional(),
+        path: z.string().min(1).describe("Path of the archived entry, e.g. '.archive/old-plan.md'."),
+        restorePath: z
+          .string()
+          .optional()
+          .describe("Custom restore destination. If omitted, restores to the original location."),
       },
     },
     async ({ path, restorePath }) => {
@@ -209,9 +317,18 @@ export function createPlannerMcpServer(workspaceRoot: string): McpServer {
     "compile_context",
     {
       description:
-        "Compile docs and graph artifacts into a machine-friendly bundle plus a readable summary for agent consumption.",
+        "Compile planning docs and graphs into a structured context bundle for agent consumption. " +
+        "Returns a bundle with: documents (full content), graphs (nodes + edges), extracted entities, " +
+        "relationships, requirements, constraints, decisions, flows, and open questions. " +
+        "Also returns a human-readable Markdown summary. " +
+        "If entryPaths is omitted, compiles the entire workspace.",
       inputSchema: {
-        entryPaths: z.array(z.string()).optional(),
+        entryPaths: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Specific entry paths to compile. If omitted, all active (non-archived) entries are included.",
+          ),
       },
     },
     async ({ entryPaths }) => {

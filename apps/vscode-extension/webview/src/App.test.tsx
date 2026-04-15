@@ -14,38 +14,23 @@ import { callPlanner, loadWebviewState, onPlannerEvent, saveWebviewState } from 
 let shouldThrowReactFlow = false;
 let reactFlowInitialized = false;
 
-vi.mock("@monaco-editor/react", () => ({
-  default: ({
-    value,
-    onChange,
-  }: {
-    value: string;
-    onChange?: (value: string) => void;
-  }) => (
-    <textarea
-      aria-label="Markdown editor"
-      data-testid="monaco-editor"
-      value={value}
-      onChange={(event) => onChange?.(event.target.value)}
-    />
-  ),
-}));
-
 vi.mock("reactflow", () => ({
   default: ({
     nodes,
     edges,
     children,
     onNodeClick,
+    onNodeDoubleClick,
     onEdgeClick,
     onSelectionChange,
     onInit,
     onConnect,
   }: {
-    nodes?: Array<{ id: string; data?: { title?: string } }>;
+    nodes?: Array<{ id: string; data?: { title?: string; onUpdate?: (updates: { title: string; body?: string }) => void } }>;
     edges?: Array<{ id: string }>;
     children?: ReactNode;
     onNodeClick?: (event: unknown, node: { id: string; data?: { title?: string } }) => void;
+    onNodeDoubleClick?: (event: unknown, node: { id: string; data?: { title?: string } }) => void;
     onEdgeClick?: (event: unknown, edge: { id: string }) => void;
     onSelectionChange?: (selection?: {
       nodes?: Array<{ id: string; data?: { title?: string } }>;
@@ -82,6 +67,11 @@ vi.mock("reactflow", () => ({
               {node.data?.title ?? node.id}
             </button>
           ))}
+          {(nodes ?? []).map((node) => (
+            <button key={`dblclick-${node.id}`} onClick={() => onNodeDoubleClick?.(undefined, node)}>
+              Double-click {node.data?.title ?? node.id}
+            </button>
+          ))}
           {(edges ?? []).map((edge) => (
             <button key={edge.id} onClick={() => onEdgeClick?.(undefined, edge)}>
               {edge.id}
@@ -109,6 +99,10 @@ vi.mock("reactflow", () => ({
   ),
   Background: () => null,
   Controls: () => null,
+  MarkerType: {
+    Arrow: "arrow",
+    ArrowClosed: "arrowclosed",
+  },
   MiniMap: () => null,
   Handle: () => null,
   Position: {
@@ -177,9 +171,6 @@ vi.mock("./vscode", () => ({
   saveWebviewState: vi.fn(),
 }));
 
-vi.mock("./monaco", () => ({
-  configureMonaco: vi.fn(),
-}));
 
 const callPlannerMock = vi.mocked(callPlanner);
 const loadWebviewStateMock = vi.mocked(loadWebviewState);
@@ -362,7 +353,7 @@ describe("planner webview smoke tests", () => {
     render(<App />);
 
     await screen.findByText("Smoke Workspace");
-    const editor = await screen.findByTestId("monaco-editor");
+    const editor = await screen.findByLabelText("Markdown editor");
 
     fireEvent.change(editor, {
       target: {
@@ -530,37 +521,12 @@ describe("planner webview smoke tests", () => {
     render(<App />);
 
     await screen.findByText("Graph Workspace");
-    await screen.findByText("Click or drag onto canvas");
 
-    const canvas = document.querySelector(".graph-canvas");
-    expect(canvas).toBeTruthy();
-    const paletteNodeButton = screen.getAllByRole("button", { name: /Node/i }).at(0);
-    expect(paletteNodeButton).toBeTruthy();
-    if (!paletteNodeButton) {
-      throw new Error("Expected node palette button");
-    }
+    const addNodeBtn = screen.getByRole("button", { name: /New Node/i });
+    expect(addNodeBtn).toBeTruthy();
 
-    const nodeTransfer = createDataTransfer();
-    fireEvent.dragStart(paletteNodeButton, {
-      dataTransfer: nodeTransfer,
-    });
-    fireEvent.dragOver(canvas!, { dataTransfer: nodeTransfer });
-    fireEvent.drop(canvas!, {
-      dataTransfer: nodeTransfer,
-      clientX: 240,
-      clientY: 220,
-    });
-
-    const secondNodeTransfer = createDataTransfer();
-    fireEvent.dragStart(paletteNodeButton, {
-      dataTransfer: secondNodeTransfer,
-    });
-    fireEvent.dragOver(canvas!, { dataTransfer: secondNodeTransfer });
-    fireEvent.drop(canvas!, {
-      dataTransfer: secondNodeTransfer,
-      clientX: 320,
-      clientY: 260,
-    });
+    fireEvent.click(addNodeBtn);
+    fireEvent.click(addNodeBtn);
 
     await waitFor(() => {
       expect(screen.getAllByRole("button", { name: "New Node" })).toHaveLength(2);
@@ -600,9 +566,8 @@ describe("planner webview smoke tests", () => {
     render(<App />);
 
     await screen.findByText("Click Workspace");
-    await screen.findByText("Click or drag onto canvas");
 
-    fireEvent.click(screen.getByRole("button", { name: /Node/i }));
+    fireEvent.click(screen.getByRole("button", { name: /New Node/i }));
 
     expect(await screen.findByRole("button", { name: "New Node" })).toBeTruthy();
   });
@@ -629,7 +594,6 @@ describe("planner webview smoke tests", () => {
     render(<App />);
 
     await screen.findByText("Selection Workspace");
-    await screen.findByText("Click or drag onto canvas");
 
     fireEvent.click(screen.getByRole("button", { name: "Clear Selection" }));
 

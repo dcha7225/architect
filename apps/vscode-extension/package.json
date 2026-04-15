@@ -28,12 +28,17 @@
       {
         "command": "projectDesignPlanner.openPlanner",
         "title": "Project Design Planner: Open Planner"
+      },
+      {
+        "command": "projectDesignPlanner.copyMcpConfig",
+        "title": "Project Design Planner: Copy MCP Config for Claude Code"
       }
     ]
   },
   "scripts": {
-    "build": "npm run build:webview && npm run build:extension",
+    "build": "npm run build:webview && npm run build:extension && npm run build:mcp-server",
     "build:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
+    "build:mcp-server": "esbuild ../../packages/mcp-server/src/index.ts --bundle --platform=node --format=cjs --outfile=dist/mcp-server.js",
     "build:webview": "vite build --config webview/vite.config.ts",
     "watch": "concurrently -k -n extension,webview \"npm:watch:extension\" \"npm:watch:webview\"",
     "watch:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --watch",

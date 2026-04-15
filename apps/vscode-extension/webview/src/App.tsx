@@ -1,4 +1,3 @@
-import Editor from "@monaco-editor/react";
 import type {
   JsonObject,
   PlannerDocEntry,
@@ -12,9 +11,10 @@ import type {
   ProjectContextResult,
 } from "@project-design-planner/planner-core";
 import { marked } from "marked";
-import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import ReactFlow, {
   Handle,
+  MarkerType,
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
@@ -35,12 +35,9 @@ import ReactFlow, {
 
 import type { PlannerServerEventMessage } from "@shared/messages";
 
-import { configureMonaco } from "./monaco";
 import { callPlanner, loadWebviewState, onPlannerEvent, saveWebviewState } from "./vscode";
 
 import "reactflow/dist/style.css";
-
-configureMonaco();
 
 type EntryTreeNode = {
   id: string;
@@ -72,6 +69,8 @@ type CanvasNodeData = {
   title: string;
   body?: string;
   color?: string;
+  editing?: boolean;
+  onUpdate?: (updates: { title: string; body?: string }) => void;
 };
 
 type CanvasNode = Node<CanvasNodeData>;
@@ -398,6 +397,13 @@ function makeReactEdges(graph: PlannerGraph): Edge[] {
     source: edge.source,
     target: edge.target,
     label: edge.label,
+    type: "smoothstep",
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      width: 16,
+      height: 16,
+      color: edge.color || "var(--accent)",
+    },
     style: {
       stroke: edge.color || "var(--accent)",
       strokeWidth: 2,
@@ -444,6 +450,77 @@ function graphFromReactState(
 }
 
 function PlannerGraphNodeCard({ data, selected }: NodeProps<CanvasNodeData>) {
+  const [editTitle, setEditTitle] = useState(data.title);
+  const [editBody, setEditBody] = useState(data.body ?? "");
+  const titleRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (data.editing) {
+      setEditTitle(data.title);
+      setEditBody(data.body ?? "");
+      requestAnimationFrame(() => {
+        titleRef.current?.focus();
+        titleRef.current?.select();
+      });
+    }
+  }, [data.editing, data.title, data.body]);
+
+  const commitEdit = () => {
+    data.onUpdate?.({
+      title: editTitle.trim() || data.title,
+      body: editBody.trim() || undefined,
+    });
+  };
+
+  const cancelEdit = () => {
+    data.onUpdate?.({ title: data.title, body: data.body });
+  };
+
+  if (data.editing) {
+    return (
+      <div
+        className={`graph-node-card editing ${selected ? "selected" : ""}`}
+        style={{ borderColor: data.color || "var(--border-strong)" }}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as HTMLElement | null)) {
+            commitEdit();
+          }
+        }}
+      >
+        <Handle type="target" position={Position.Left} />
+        <input
+          ref={titleRef}
+          className="graph-node-card__title-input"
+          value={editTitle}
+          onChange={(event) => setEditTitle(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitEdit();
+            }
+            if (event.key === "Escape") {
+              cancelEdit();
+            }
+          }}
+          placeholder="Node label"
+        />
+        <textarea
+          className="graph-node-card__body-input"
+          value={editBody}
+          onChange={(event) => setEditBody(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              cancelEdit();
+            }
+          }}
+          placeholder="Description (optional)"
+          rows={2}
+        />
+        <Handle type="source" position={Position.Right} />
+      </div>
+    );
+  }
+
   return (
     <div
       className={`graph-node-card ${selected ? "selected" : ""}`}
@@ -1299,28 +1376,6 @@ function DocEditorPane(props: {
 }) {
   const { tab, onTogglePreview, onContentChange } = props;
   const previewHtml = useMemo(() => marked.parse(tab.content) as string, [tab.content]);
-  const monacoReadyRef = useRef(false);
-  const [editorSlow, setEditorSlow] = useState(false);
-  const [usePlainEditor, setUsePlainEditor] = useState(false);
-  const [editorAttempt, setEditorAttempt] = useState(0);
-
-  useEffect(() => {
-    if (tab.preview) {
-      return;
-    }
-
-    monacoReadyRef.current = false;
-    setEditorSlow(false);
-    setUsePlainEditor(false);
-
-    const timeout = window.setTimeout(() => {
-      if (!monacoReadyRef.current) {
-        setEditorSlow(true);
-      }
-    }, 4000);
-
-    return () => window.clearTimeout(timeout);
-  }, [editorAttempt, tab.path, tab.preview]);
 
   return (
     <div className="doc-pane">
@@ -1330,58 +1385,13 @@ function DocEditorPane(props: {
       <div className="doc-surface">
         {tab.preview ? (
           <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: previewHtml }} />
-        ) : usePlainEditor ? (
+        ) : (
           <div className="plain-editor-wrap">
-            <div className="banner warning">
-              <div>
-                The rich editor did not finish loading in this VS Code webview, so the planner switched
-                to a plain Markdown editor.
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  monacoReadyRef.current = false;
-                  setEditorAttempt((attempt) => attempt + 1);
-                }}
-              >
-                Retry Rich Editor
-              </button>
-            </div>
             <textarea
               aria-label="Markdown editor"
               className="plain-editor"
               value={tab.content}
               onChange={(event) => onContentChange(event.target.value)}
-            />
-          </div>
-        ) : (
-          <div className="rich-editor-wrap">
-            {editorSlow ? (
-              <div className="banner warning">
-                <div>The rich editor is taking longer than expected to load in this webview.</div>
-                <button type="button" onClick={() => setUsePlainEditor(true)}>
-                  Use Plain Editor
-                </button>
-              </div>
-            ) : null}
-            <Editor
-              key={`${tab.path}:${editorAttempt}`}
-              height="100%"
-              defaultLanguage="markdown"
-              value={tab.content}
-              theme="vs-dark"
-              onMount={() => {
-                monacoReadyRef.current = true;
-                setEditorSlow(false);
-              }}
-              onChange={(value) => onContentChange(value ?? "")}
-              loading={<div className="editor-loading">Loading rich editor...</div>}
-              options={{
-                fontSize: 14,
-                minimap: { enabled: false },
-                wordWrap: "on",
-                lineNumbersMinChars: 3,
-              }}
             />
           </div>
         )}
@@ -1397,12 +1407,48 @@ function GraphEditorPane(props: {
 }) {
   const { tab, onChange, onSelectionChange } = props;
   const graph = useMemo(() => normalizeGraph(tab.graph), [tab.graph]);
-  const reactNodes = useMemo(() => makeReactNodes(graph), [graph.nodes]);
   const reactEdges = useMemo(() => makeReactEdges(graph), [graph.edges]);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const [draggingKind, setDraggingKind] = useState<GraphPaletteKind | null>(null);
   const [pendingFocusNodeId, setPendingFocusNodeId] = useState<string | null>(null);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+
+  const graphRef = useRef(graph);
+  graphRef.current = graph;
+
+  const updateNodeFields = useCallback(
+    (nodeId: string, updates: { title: string; body?: string }) => {
+      const currentGraph = graphRef.current;
+      onChange({
+        ...currentGraph,
+        nodes: currentGraph.nodes.map((node) =>
+          node.id === nodeId ? { ...node, label: updates.title, body: updates.body } : node,
+        ),
+      });
+      setEditingNodeId(null);
+    },
+    [onChange],
+  );
+
+  const reactNodes = useMemo((): CanvasNode[] => {
+    return graph.nodes.map((node) => ({
+      id: node.id,
+      type: "plannerNode",
+      position: node.position,
+      data: {
+        title: node.label,
+        body: node.body,
+        color: node.color,
+        editing: editingNodeId === node.id,
+        onUpdate: (updates: { title: string; body?: string }) => updateNodeFields(node.id, updates),
+      },
+      style: { width: estimateCanvasNodeSize(node).width },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      zIndex: 10,
+    }));
+  }, [graph.nodes, editingNodeId, updateNodeFields]);
 
   useEffect(() => {
     if (!flowInstance) {
@@ -1556,15 +1602,31 @@ function GraphEditorPane(props: {
   };
 
   return (
-    <div className="graph-pane">
+    <div
+      className="graph-pane"
+      tabIndex={-1}
+      onKeyDown={(event) => {
+        if (
+          (event.key === "Delete" || event.key === "Backspace") &&
+          !editingNodeId &&
+          tab.selection
+        ) {
+          event.preventDefault();
+          deleteSelection();
+        }
+      }}
+    >
       <div className="graph-toolbar graph-toolbar--builder">
-        <div className="graph-toolbar-copy">
-          <div className="graph-toolbar-title">Click or drag onto canvas</div>
-          <div className="graph-toolbar-subtitle">
-            Click to add a node in view, or drag it onto an exact spot in the graph.
-          </div>
-        </div>
         <div className="toolbar">
+          <button
+            className="add-node-btn"
+            onClick={() => {
+              const position = getQuickAddPosition();
+              addNodeAtPosition(position.x, position.y);
+            }}
+          >
+            + New Node
+          </button>
           <button
             onClick={() => {
               if (!flowInstance || graph.nodes.length === 0) {
@@ -1587,62 +1649,7 @@ function GraphEditorPane(props: {
         </div>
       </div>
 
-      <div className="graph-builder">
-        <aside className="graph-palette">
-          {[
-            {
-              kind: "node" as const,
-              title: "Node",
-              description: "Components, concepts, interfaces",
-            },
-          ].map((item) => (
-            <button
-              key={item.kind}
-              className={`graph-palette-item ${draggingKind === item.kind ? "dragging" : ""}`}
-              draggable
-              onClick={() => {
-                const position = getQuickAddPosition();
-                addNodeAtPosition(position.x, position.y);
-              }}
-              onDragStart={(event) => {
-                event.dataTransfer.setData("application/x-planner-graph-item", item.kind);
-                event.dataTransfer.effectAllowed = "copy";
-                setDraggingKind(item.kind);
-              }}
-              onDragEnd={() => setDraggingKind(null)}
-            >
-              <span className="graph-palette-item__title">{item.title}</span>
-              <span className="graph-palette-item__description">{item.description}</span>
-            </button>
-          ))}
-        </aside>
-
-        <div
-          ref={canvasRef}
-          className={`graph-canvas ${draggingKind ? "drag-active" : ""}`}
-          onDragOver={(event) => {
-            if (event.dataTransfer.types.includes("application/x-planner-graph-item")) {
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "copy";
-            }
-          }}
-          onDrop={(event) => {
-            const droppedKind = event.dataTransfer.getData("application/x-planner-graph-item") as
-              | GraphPaletteKind
-              | "";
-            if (!droppedKind) {
-              return;
-            }
-
-            event.preventDefault();
-            const position = getDropPosition(event.nativeEvent);
-            addNodeAtPosition(position.x, position.y);
-            setDraggingKind(null);
-          }}
-        >
-          {draggingKind ? (
-            <div className="graph-drop-hint">Release to add a {draggingKind} here</div>
-          ) : null}
+      <div ref={canvasRef} className="graph-canvas">
           <ReactFlow
             nodes={reactNodes}
             edges={reactEdges}
@@ -1651,24 +1658,18 @@ function GraphEditorPane(props: {
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
             onConnect={handleConnect}
+            onNodeDoubleClick={(_event, node) => {
+              setEditingNodeId(node.id);
+            }}
             onNodeClick={(_event, node) => {
               onSelectionChange(nodeSelectionFromCanvasNode(node as CanvasNode));
             }}
             onEdgeClick={(_event, edge) => {
               onSelectionChange({ kind: "edge", id: edge.id });
             }}
-            onSelectionChange={(selection) => {
-              const nodes = selection?.nodes ?? [];
-              const edges = selection?.edges ?? [];
-              const selectedNode = nodes.at(0) as CanvasNode | undefined;
-              const selectedEdge = edges.at(0);
-              if (selectedNode) {
-                onSelectionChange(nodeSelectionFromCanvasNode(selectedNode));
-              } else if (selectedEdge) {
-                onSelectionChange({ kind: "edge", id: selectedEdge.id });
-              } else {
-                onSelectionChange(null);
-              }
+            onPaneClick={() => {
+              setEditingNodeId(null);
+              onSelectionChange(null);
             }}
             onMoveEnd={(_event, viewport) => {
               onChange({
@@ -1679,10 +1680,9 @@ function GraphEditorPane(props: {
             proOptions={{ hideAttribution: true }}
           >
             <Background color="rgba(255,255,255,0.08)" gap={24} />
-            <MiniMap pannable zoomable />
+            <MiniMap pannable zoomable style={{ width: 120, height: 80, backgroundColor: "var(--bg-elevated)" }} maskColor="rgba(0, 0, 0, 0.35)" nodeColor="rgba(109, 211, 168, 0.45)" />
             <Controls />
           </ReactFlow>
-        </div>
       </div>
     </div>
   );

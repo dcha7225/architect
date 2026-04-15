@@ -1,0 +1,66 @@
+{
+  "name": "project-design-planner-extension",
+  "displayName": "Project Design Planner",
+  "description": "Free-form project planning workspace with Markdown docs, graph design artifacts, and MCP access.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "project-design-planner",
+  "license": "UNLICENSED",
+  "main": "./dist/extension.js",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "planning",
+    "architecture",
+    "design",
+    "graph",
+    "mcp"
+  ],
+  "activationEvents": [
+    "onCommand:projectDesignPlanner.openPlanner"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "projectDesignPlanner.openPlanner",
+        "title": "Project Design Planner: Open Planner"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "npm run build:webview && npm run build:extension",
+    "build:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
+    "build:webview": "vite build --config webview/vite.config.ts",
+    "watch": "concurrently -k -n extension,webview \"npm:watch:extension\" \"npm:watch:webview\"",
+    "watch:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --watch",
+    "watch:webview": "vite build --watch --config webview/vite.config.ts",
+    "package:vsix": "npm run build && vsce package --no-dependencies --allow-missing-repository --out dist/project-design-planner.vsix",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webview/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@project-design-planner/planner-core": "0.1.0",
+    "marked": "^16.4.1",
+    "monaco-editor": "^0.55.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "reactflow": "^11.11.4"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.0",
+    "@vscode/vsce": "^3.7.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/vscode": "^1.105.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.25.11",
+    "jsdom": "^26.1.0",
+    "vite": "^7.1.12"
+  }
+}

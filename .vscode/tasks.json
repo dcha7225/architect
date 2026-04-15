@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "planner-extension: build",
+      "type": "shell",
+      "command": "npm run build -w apps/vscode-extension",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "planner-extension: watch",
+      "type": "shell",
+      "command": "npm run watch -w apps/vscode-extension",
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

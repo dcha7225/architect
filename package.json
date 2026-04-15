@@ -1,0 +1,19 @@
+{
+  "name": "project-design-planner",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @project-design-planner/planner-core && npm run build -w @project-design-planner/mcp-server && npm run build -w apps/vscode-extension",
+    "test": "npm run test -w @project-design-planner/planner-core && npm run build -w @project-design-planner/planner-core && npm run test -w @project-design-planner/mcp-server && npm run test -w apps/vscode-extension",
+    "typecheck": "npm run typecheck -w @project-design-planner/planner-core && npm run build -w @project-design-planner/planner-core && npm run typecheck -w @project-design-planner/mcp-server && npm run typecheck -w apps/vscode-extension"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.7"
+  }
+}

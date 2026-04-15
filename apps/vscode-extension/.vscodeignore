@@ -1,0 +1,8 @@
+src/**
+webview/src/**
+webview/index.html
+webview/tsconfig.json
+webview/vite.config.ts
+tsconfig.json
+node_modules/**
+*.tsbuildinfo

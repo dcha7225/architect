@@ -55,7 +55,6 @@ describe("planner-core storage", () => {
         },
       ],
       edges: [],
-      groups: [],
     });
 
     const entries = await listEntries(workspaceRoot, { includeArchived: true });
@@ -117,7 +116,6 @@ describe("planner-core storage", () => {
           label: "depends on",
         },
       ],
-      groups: [],
     });
 
     const archived = await archiveEntry(workspaceRoot, "specs/requirements.md");

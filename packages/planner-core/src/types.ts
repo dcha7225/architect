@@ -59,24 +59,6 @@ export interface PlannerGraphEdge {
   annotations?: JsonObject;
 }
 
-export interface PlannerGraphGroup {
-  id: string;
-  label: string;
-  memberIds: string[];
-  color?: string;
-  metadata?: JsonObject;
-  annotations?: JsonObject;
-}
-
-export interface PlannerGraphComment {
-  id: string;
-  body: string;
-  x: number;
-  y: number;
-  color?: string;
-  metadata?: JsonObject;
-}
-
 export interface PlannerGraph {
   version: number;
   metadata: PlannerMetadata;
@@ -87,8 +69,6 @@ export interface PlannerGraph {
   };
   nodes: PlannerGraphNode[];
   edges: PlannerGraphEdge[];
-  groups: PlannerGraphGroup[];
-  comments?: PlannerGraphComment[];
 }
 
 export interface PlannerGraphEntry extends PlannerEntryBase {
@@ -111,7 +91,7 @@ export interface PlannerEntrySummary extends PlannerEntryBase {
 
 export interface CompileReference {
   path: string;
-  kind: "doc" | "graph" | "node" | "edge" | "group";
+  kind: "doc" | "graph" | "node" | "edge";
   id?: string;
   title?: string;
 }
@@ -162,7 +142,6 @@ export interface ProjectContextBundle {
     updatedAt?: string;
     nodes: PlannerGraphNode[];
     edges: PlannerGraphEdge[];
-    groups: PlannerGraphGroup[];
   }>;
   entities: CompiledEntity[];
   relationships: CompiledRelationship[];

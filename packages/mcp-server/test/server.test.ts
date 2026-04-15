@@ -80,7 +80,6 @@ describe("planner MCP server", () => {
             },
           ],
           edges: [],
-          groups: [],
         },
       },
     });

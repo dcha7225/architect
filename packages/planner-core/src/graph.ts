@@ -24,8 +24,6 @@ export function createEmptyGraph(title = "Untitled Graph"): PlannerGraph {
     },
     nodes: [],
     edges: [],
-    groups: [],
-    comments: [],
   };
 }
 

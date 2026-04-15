@@ -41,24 +41,6 @@ export const graphEdgeSchema = z.object({
   annotations: z.record(z.string(), jsonSchema.optional()).optional(),
 });
 
-export const graphGroupSchema = z.object({
-  id: z.string().min(1),
-  label: z.string().min(1),
-  memberIds: z.array(z.string()),
-  color: z.string().optional(),
-  metadata: z.record(z.string(), jsonSchema.optional()).optional(),
-  annotations: z.record(z.string(), jsonSchema.optional()).optional(),
-});
-
-export const graphCommentSchema = z.object({
-  id: z.string().min(1),
-  body: z.string().min(1),
-  x: z.number(),
-  y: z.number(),
-  color: z.string().optional(),
-  metadata: z.record(z.string(), jsonSchema.optional()).optional(),
-});
-
 export const plannerGraphSchema = z.object({
   version: z.number().int().positive().default(1),
   metadata: metadataSchema.default({}),
@@ -71,6 +53,4 @@ export const plannerGraphSchema = z.object({
     .optional(),
   nodes: z.array(graphNodeSchema).default([]),
   edges: z.array(graphEdgeSchema).default([]),
-  groups: z.array(graphGroupSchema).default([]),
-  comments: z.array(graphCommentSchema).optional(),
 });

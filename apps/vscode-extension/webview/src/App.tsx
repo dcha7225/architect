@@ -5,23 +5,23 @@ import type {
   PlannerEntry,
   PlannerEntrySummary,
   PlannerGraph,
-  PlannerGraphComment,
   PlannerGraphEdge,
   PlannerGraphEntry,
-  PlannerGraphGroup,
   PlannerGraphNode,
   PlannerMetadata,
   ProjectContextResult,
 } from "@project-design-planner/planner-core";
 import { marked } from "marked";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Component, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import ReactFlow, {
+  Handle,
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
   Background,
   Controls,
   MiniMap,
+  Position,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -30,6 +30,7 @@ import ReactFlow, {
   type NodeProps,
   type NodeTypes,
   type OnConnect,
+  type ReactFlowInstance,
 } from "reactflow";
 
 import type { PlannerServerEventMessage } from "@shared/messages";
@@ -62,20 +63,19 @@ type MetadataDraft = {
 
 type GraphSelection =
   | {
-      kind: "node" | "edge" | "group" | "comment";
+      kind: "node" | "edge";
       id: string;
     }
   | null;
 
 type CanvasNodeData = {
-  selectionKind: "node" | "group" | "comment";
   title: string;
   body?: string;
   color?: string;
-  memberCount?: number;
 };
 
 type CanvasNode = Node<CanvasNodeData>;
+type GraphPaletteKind = "node";
 
 type DocTabState = {
   kind: "doc";
@@ -181,6 +181,31 @@ function parseMetadataDraft(draft: MetadataDraft): { metadata?: Record<string, u
   };
 }
 
+function isSameSelection(left: GraphSelection, right: GraphSelection): boolean {
+  if (left === right) {
+    return true;
+  }
+
+  if (!left || !right) {
+    return false;
+  }
+
+  return left.kind === right.kind && left.id === right.id;
+}
+
+function normalizeGraph(graph: PlannerGraph): PlannerGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes ?? [],
+    edges: graph.edges ?? [],
+    viewport: graph.viewport ?? {
+      x: 0,
+      y: 0,
+      zoom: 1,
+    },
+  };
+}
+
 function createTabState(entry: PlannerEntry): TabState {
   if (entry.kind === "doc") {
     return {
@@ -204,7 +229,7 @@ function createTabState(entry: PlannerEntry): TabState {
       revision: entry.revision,
       dirty: false,
       stale: false,
-      graph: entry.graph,
+      graph: normalizeGraph(entry.graph),
       metadataDraft: createMetadataDraft(entry.metadata),
       selection: null,
     };
@@ -341,18 +366,6 @@ function stripArchivePrefix(entryPath: string): string {
   return entryPath.startsWith(".archive/") ? entryPath.slice(".archive/".length) : entryPath;
 }
 
-function asJsonObject(value: unknown): JsonObject | undefined {
-  if (!value || Array.isArray(value) || typeof value !== "object") {
-    return undefined;
-  }
-
-  return value as JsonObject;
-}
-
-function readNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function estimateCanvasNodeSize(node: PlannerGraphNode): { width: number; height: number } {
   return {
     width: 220,
@@ -360,119 +373,12 @@ function estimateCanvasNodeSize(node: PlannerGraphNode): { width: number; height
   };
 }
 
-function getGroupLayout(
-  group: PlannerGraphGroup,
-  graph: PlannerGraph,
-  index: number,
-): {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  derived: boolean;
-} {
-  const layout = asJsonObject(group.metadata?.layout);
-  const memberNodes = group.memberIds
-    .map((memberId) => graph.nodes.find((node) => node.id === memberId))
-    .filter((node): node is PlannerGraphNode => Boolean(node));
-  const minWidth = readNumber(layout?.width) ?? 280;
-  const minHeight = readNumber(layout?.height) ?? 180;
-
-  if (memberNodes.length > 0) {
-    const padding = readNumber(layout?.padding) ?? 40;
-    const topInset = readNumber(layout?.topInset) ?? 56;
-    const bounds = memberNodes.map((node) => {
-      const size = estimateCanvasNodeSize(node);
-      return {
-        minX: node.position.x,
-        minY: node.position.y,
-        maxX: node.position.x + size.width,
-        maxY: node.position.y + size.height,
-      };
-    });
-
-    const minX = Math.min(...bounds.map((bound) => bound.minX)) - padding;
-    const minY = Math.min(...bounds.map((bound) => bound.minY)) - topInset;
-    const maxX = Math.max(...bounds.map((bound) => bound.maxX)) + padding;
-    const maxY = Math.max(...bounds.map((bound) => bound.maxY)) + padding;
-
-    return {
-      x: minX,
-      y: minY,
-      width: Math.max(maxX - minX, minWidth),
-      height: Math.max(maxY - minY, minHeight),
-      derived: true,
-    };
-  }
-
-  return {
-    x: readNumber(layout?.x) ?? 80 + index * 28,
-    y: readNumber(layout?.y) ?? 80 + index * 28,
-    width: minWidth,
-    height: minHeight,
-    derived: false,
-  };
-}
-
-function writeGroupLayout(group: PlannerGraphGroup, node: CanvasNode): PlannerGraphGroup {
-  const currentMetadata = asJsonObject(group.metadata) ?? {};
-  const currentLayout = asJsonObject(currentMetadata.layout) ?? {};
-  const width = typeof node.width === "number" ? node.width : readNumber(currentLayout.width) ?? 280;
-  const height =
-    typeof node.height === "number" ? node.height : readNumber(currentLayout.height) ?? 180;
-
-  return {
-    ...group,
-    metadata: {
-      ...currentMetadata,
-      layout: {
-        ...currentLayout,
-        x: node.position.x,
-        y: node.position.y,
-        width,
-        height,
-      },
-    },
-  };
-}
-
 function makeReactNodes(graph: PlannerGraph): CanvasNode[] {
-  const groupNodes: CanvasNode[] = graph.groups.map((group, index) => {
-    const layout = getGroupLayout(group, graph, index);
-
-    return {
-      id: `group:${group.id}`,
-      type: "groupFrame",
-      position: {
-        x: layout.x,
-        y: layout.y,
-      },
-      data: {
-        selectionKind: "group",
-        title: group.label,
-        color: group.color,
-        memberCount: group.memberIds.length,
-        body: layout.derived
-          ? `${group.memberIds.length} member${group.memberIds.length === 1 ? "" : "s"}`
-          : "Free-position frame",
-      },
-      style: {
-        width: layout.width,
-        height: layout.height,
-      },
-      connectable: false,
-      draggable: !layout.derived,
-      selectable: true,
-      zIndex: 1,
-    };
-  });
-
-  const nodeCards: CanvasNode[] = graph.nodes.map((node) => ({
+  return graph.nodes.map((node) => ({
     id: node.id,
     type: "plannerNode",
     position: node.position,
     data: {
-      selectionKind: "node",
       title: node.label,
       body: node.body,
       color: node.color,
@@ -480,30 +386,10 @@ function makeReactNodes(graph: PlannerGraph): CanvasNode[] {
     style: {
       width: estimateCanvasNodeSize(node).width,
     },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
     zIndex: 10,
   }));
-
-  const commentNodes: CanvasNode[] = (graph.comments ?? []).map((comment) => ({
-    id: `comment:${comment.id}`,
-    type: "stickyComment",
-    position: {
-      x: comment.x,
-      y: comment.y,
-    },
-    data: {
-      selectionKind: "comment",
-      title: "Comment",
-      body: comment.body,
-      color: comment.color,
-    },
-    style: {
-      width: 240,
-    },
-    connectable: false,
-    zIndex: 20,
-  }));
-
-  return [...groupNodes, ...nodeCards, ...commentNodes];
 }
 
 function makeReactEdges(graph: PlannerGraph): Edge[] {
@@ -524,13 +410,9 @@ function graphFromReactState(
   nextNodes: CanvasNode[],
   nextEdges: Edge[],
 ): PlannerGraph {
-  const graphCanvasNodes = nextNodes.filter((node) => node.data.selectionKind === "node");
-  const groupCanvasNodes = nextNodes.filter((node) => node.data.selectionKind === "group");
-  const commentCanvasNodes = nextNodes.filter((node) => node.data.selectionKind === "comment");
-
   return {
     ...graph,
-    nodes: graphCanvasNodes.map((node) => {
+    nodes: nextNodes.map((node) => {
       const existing = graph.nodes.find((candidate) => candidate.id === node.id);
       return {
         id: node.id,
@@ -558,24 +440,6 @@ function graphFromReactState(
         annotations: existing?.annotations,
       };
     }),
-    groups: graph.groups.map((group) => {
-      if (group.memberIds.length > 0) {
-        return group;
-      }
-
-      const groupNode = groupCanvasNodes.find((node) => node.id === `group:${group.id}`);
-      return groupNode ? writeGroupLayout(group, groupNode) : group;
-    }),
-    comments: graph.comments?.map((comment) => {
-      const commentNode = commentCanvasNodes.find((node) => node.id === `comment:${comment.id}`);
-      return commentNode
-        ? {
-            ...comment,
-            x: commentNode.position.x,
-            y: commentNode.position.y,
-          }
-        : comment;
-    }),
   };
 }
 
@@ -585,59 +449,63 @@ function PlannerGraphNodeCard({ data, selected }: NodeProps<CanvasNodeData>) {
       className={`graph-node-card ${selected ? "selected" : ""}`}
       style={{ borderColor: data.color || "var(--border-strong)" }}
     >
+      <Handle type="target" position={Position.Left} />
       <div className="graph-node-card__title">{data.title}</div>
       {data.body ? <div className="graph-node-card__body">{data.body}</div> : null}
-    </div>
-  );
-}
-
-function GroupFrameNode({ data, selected }: NodeProps<CanvasNodeData>) {
-  return (
-    <div
-      className={`graph-group-frame ${selected ? "selected" : ""}`}
-      style={{ borderColor: data.color || "rgba(109, 211, 168, 0.45)" }}
-    >
-      <div className="graph-group-frame__label">{data.title}</div>
-      {data.body ? <div className="graph-group-frame__meta">{data.body}</div> : null}
-    </div>
-  );
-}
-
-function StickyCommentNode({ data, selected }: NodeProps<CanvasNodeData>) {
-  return (
-    <div
-      className={`graph-comment-card ${selected ? "selected" : ""}`}
-      style={{ background: data.color || "rgba(245, 179, 79, 0.92)" }}
-    >
-      <div className="graph-comment-card__eyebrow">Comment</div>
-      <div className="graph-comment-card__body">{data.body || "Add a note"}</div>
+      <Handle type="source" position={Position.Right} />
     </div>
   );
 }
 
 const graphNodeTypes: NodeTypes = {
   plannerNode: PlannerGraphNodeCard,
-  groupFrame: GroupFrameNode,
-  stickyComment: StickyCommentNode,
 };
+
+type PaneErrorBoundaryProps = {
+  entryKey: string;
+  children: ReactNode;
+  fallback: (error: Error, reset: () => void) => ReactNode;
+};
+
+type PaneErrorBoundaryState = {
+  error: Error | null;
+};
+
+class PaneErrorBoundary extends Component<PaneErrorBoundaryProps, PaneErrorBoundaryState> {
+  state: PaneErrorBoundaryState = {
+    error: null,
+  };
+
+  static getDerivedStateFromError(error: Error): PaneErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    console.error("Planner pane crashed", error, errorInfo);
+  }
+
+  componentDidUpdate(prevProps: PaneErrorBoundaryProps): void {
+    if (prevProps.entryKey !== this.props.entryKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  private readonly reset = (): void => {
+    this.setState({ error: null });
+  };
+
+  render(): ReactNode {
+    if (this.state.error) {
+      return this.props.fallback(this.state.error, this.reset);
+    }
+
+    return this.props.children;
+  }
+}
 
 function nodeSelectionFromCanvasNode(node: CanvasNode | undefined): GraphSelection {
   if (!node) {
     return null;
-  }
-
-  if (node.data.selectionKind === "group") {
-    return {
-      kind: "group",
-      id: node.id.replace(/^group:/, ""),
-    };
-  }
-
-  if (node.data.selectionKind === "comment") {
-    return {
-      kind: "comment",
-      id: node.id.replace(/^comment:/, ""),
-    };
   }
 
   return {
@@ -764,9 +632,22 @@ function PlannerApp() {
   }
 
   function updateTab(entryPath: string, updater: (tab: TabState) => TabState): void {
-    setTabs((currentTabs) =>
-      currentTabs.map((tab) => (tab.path === entryPath ? updater(tab) : tab)),
-    );
+    setTabs((currentTabs) => {
+      let changed = false;
+      const nextTabs = currentTabs.map((tab) => {
+        if (tab.path !== entryPath) {
+          return tab;
+        }
+
+        const nextTab = updater(tab);
+        if (nextTab !== tab) {
+          changed = true;
+        }
+        return nextTab;
+      });
+
+      return changed ? nextTabs : currentTabs;
+    });
   }
 
   function replaceTab(entry: PlannerEntry): void {
@@ -1203,57 +1084,91 @@ function PlannerApp() {
                 </div>
               ) : null}
 
-              {activeTab.kind === "doc" ? (
-                <DocEditorPane
-                  tab={activeTab}
-                  onTogglePreview={() =>
-                    updateTab(activeTab.path, (tab) =>
-                      tab.kind === "doc"
-                        ? {
-                            ...tab,
-                            preview: !tab.preview,
-                          }
-                        : tab,
-                    )
-                  }
-                  onContentChange={(content) =>
-                    updateTab(activeTab.path, (tab) =>
-                      tab.kind === "doc"
-                        ? {
-                            ...tab,
-                            content,
-                            dirty: true,
-                          }
-                        : tab,
-                    )
-                  }
-                />
-              ) : (
-                <GraphEditorPane
-                  tab={activeTab}
-                  onChange={(graph) =>
-                    updateTab(activeTab.path, (tab) =>
-                      tab.kind === "graph"
-                        ? {
-                            ...tab,
-                            graph,
-                            dirty: true,
-                          }
-                        : tab,
-                    )
-                  }
-                  onSelectionChange={(selection) =>
-                    updateTab(activeTab.path, (tab) =>
-                      tab.kind === "graph"
-                        ? {
-                            ...tab,
-                            selection,
-                          }
-                        : tab,
-                    )
-                  }
-                />
-              )}
+              <PaneErrorBoundary
+                entryKey={`${activeTab.kind}:${activeTab.path}:${activeTab.revision}`}
+                fallback={(error, reset) =>
+                  activeTab.kind === "graph" ? (
+                    <GraphFallbackPane
+                      tab={activeTab}
+                      error={error}
+                      onRetryCanvas={reset}
+                      onApplyGraph={(graph) =>
+                        updateTab(activeTab.path, (tab) =>
+                          tab.kind === "graph"
+                            ? {
+                                ...tab,
+                                graph,
+                                dirty: true,
+                              }
+                            : tab,
+                        )
+                      }
+                    />
+                  ) : (
+                    <div className="banner error">
+                      <div>
+                        This editor pane crashed while rendering.
+                        <div className="error-detail">{error.message || "Unknown editor error."}</div>
+                      </div>
+                      <button onClick={reset}>Retry</button>
+                    </div>
+                  )
+                }
+              >
+                {activeTab.kind === "doc" ? (
+                  <DocEditorPane
+                    tab={activeTab}
+                    onTogglePreview={() =>
+                      updateTab(activeTab.path, (tab) =>
+                        tab.kind === "doc"
+                          ? {
+                              ...tab,
+                              preview: !tab.preview,
+                            }
+                          : tab,
+                      )
+                    }
+                    onContentChange={(content) =>
+                      updateTab(activeTab.path, (tab) =>
+                        tab.kind === "doc"
+                          ? {
+                              ...tab,
+                              content,
+                              dirty: true,
+                            }
+                          : tab,
+                      )
+                    }
+                  />
+                ) : (
+                  <GraphEditorPane
+                    tab={activeTab}
+                    onChange={(graph) =>
+                      updateTab(activeTab.path, (tab) =>
+                        tab.kind === "graph"
+                          ? {
+                              ...tab,
+                              graph,
+                              dirty: true,
+                            }
+                          : tab,
+                      )
+                    }
+                    onSelectionChange={(selection) =>
+                      updateTab(activeTab.path, (tab) =>
+                        tab.kind === "graph"
+                          ? isSameSelection(tab.selection, selection)
+                            ? tab
+                            : {
+                                ...tab,
+                                selection,
+                              }
+                          : tab,
+                      )
+                    }
+                  />
+                )}
+              </PaneErrorBoundary>
             </div>
           ) : (
             <div className="empty-state large">
@@ -1481,11 +1396,111 @@ function GraphEditorPane(props: {
   onSelectionChange: (selection: GraphSelection) => void;
 }) {
   const { tab, onChange, onSelectionChange } = props;
-  const reactNodes = makeReactNodes(tab.graph);
-  const reactEdges = makeReactEdges(tab.graph);
+  const graph = useMemo(() => normalizeGraph(tab.graph), [tab.graph]);
+  const reactNodes = useMemo(() => makeReactNodes(graph), [graph.nodes]);
+  const reactEdges = useMemo(() => makeReactEdges(graph), [graph.edges]);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [draggingKind, setDraggingKind] = useState<GraphPaletteKind | null>(null);
+  const [pendingFocusNodeId, setPendingFocusNodeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!flowInstance) {
+      return;
+    }
+
+    if (graph.nodes.length > 0) {
+      flowInstance.fitView({
+        nodes: graph.nodes.map((node) => ({ id: node.id })),
+        padding: 0.24,
+        duration: 0,
+        maxZoom: 1.1,
+      });
+      return;
+    }
+
+    if (graph.viewport) {
+      flowInstance.setViewport(graph.viewport);
+    }
+  }, [flowInstance, tab.path, tab.revision]);
+
+  useEffect(() => {
+    if (!flowInstance || !pendingFocusNodeId) {
+      return;
+    }
+
+    const node = graph.nodes.find((candidate) => candidate.id === pendingFocusNodeId);
+    if (!node) {
+      return;
+    }
+
+    flowInstance.fitView({
+      nodes: [{ id: node.id }],
+      padding: 1.2,
+      duration: 180,
+      maxZoom: 1.15,
+    });
+    setPendingFocusNodeId(null);
+  }, [flowInstance, graph.nodes, graph.viewport, pendingFocusNodeId]);
+
+  const addNodeAtPosition = (x: number, y: number) => {
+    const nextNodeId = `node-${Date.now()}`;
+    onChange({
+      ...graph,
+      nodes: [
+        ...graph.nodes,
+        {
+          id: nextNodeId,
+          label: "New Node",
+          position: { x, y },
+        },
+      ],
+    });
+    onSelectionChange({ kind: "node", id: nextNodeId });
+    setPendingFocusNodeId(nextNodeId);
+  };
+
+  const getDropPosition = (event: Pick<DragEvent, "clientX" | "clientY">): { x: number; y: number } => {
+    if (flowInstance) {
+      return flowInstance.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+    }
+
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (!bounds) {
+      return {
+        x: 120 + graph.nodes.length * 20,
+        y: 120 + graph.nodes.length * 20,
+      };
+    }
+
+    return {
+      x: Math.max(event.clientX - bounds.left, 48),
+      y: Math.max(event.clientY - bounds.top, 48),
+    };
+  };
+
+  const getQuickAddPosition = (): { x: number; y: number } => {
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (bounds && flowInstance) {
+      return getDropPosition({
+        clientX: bounds.left + bounds.width / 2 + graph.nodes.length * 18,
+        clientY: bounds.top + bounds.height / 2 + graph.nodes.length * 18,
+      });
+    }
+
+    return {
+      x: 120 + graph.nodes.length * 20,
+      y: 120 + graph.nodes.length * 20,
+    };
+  };
 
   const handleNodesChange = (changes: NodeChange[]) => {
-    const persistedChanges = changes.filter((change) => change.type !== "select");
+    const persistedChanges = changes.filter(
+      (change) => change.type !== "select" && change.type !== "dimensions",
+    );
     if (persistedChanges.length === 0) {
       return;
     }
@@ -1515,60 +1530,6 @@ function GraphEditorPane(props: {
     onChange(graphFromReactState(tab.graph, reactNodes, nextEdges));
   };
 
-  const addNode = () => {
-    onChange({
-      ...tab.graph,
-      nodes: [
-        ...tab.graph.nodes,
-        {
-          id: `node-${Date.now()}`,
-          label: "New Node",
-          position: {
-            x: 120 + tab.graph.nodes.length * 20,
-            y: 120 + tab.graph.nodes.length * 20,
-          },
-        },
-      ],
-    });
-  };
-
-  const addComment = () => {
-    onChange({
-      ...tab.graph,
-      comments: [
-        ...(tab.graph.comments ?? []),
-        {
-          id: `comment-${Date.now()}`,
-          body: "New comment",
-          x: 160,
-          y: 160,
-        },
-      ],
-    });
-  };
-
-  const addGroup = () => {
-    onChange({
-      ...tab.graph,
-      groups: [
-        ...tab.graph.groups,
-        {
-          id: `group-${Date.now()}`,
-          label: "New Group",
-          memberIds: [],
-          metadata: {
-            layout: {
-              x: 120 + tab.graph.groups.length * 28,
-              y: 120 + tab.graph.groups.length * 28,
-              width: 280,
-              height: 180,
-            },
-          },
-        },
-      ],
-    });
-  };
-
   const deleteSelection = () => {
     if (!tab.selection) {
       return;
@@ -1577,33 +1538,17 @@ function GraphEditorPane(props: {
     switch (tab.selection.kind) {
       case "node":
         onChange({
-          ...tab.graph,
-          nodes: tab.graph.nodes.filter((node) => node.id !== tab.selection?.id),
-          edges: tab.graph.edges.filter(
+          ...graph,
+          nodes: graph.nodes.filter((node) => node.id !== tab.selection?.id),
+          edges: graph.edges.filter(
             (edge) => edge.source !== tab.selection?.id && edge.target !== tab.selection?.id,
           ),
-          groups: tab.graph.groups.map((group) => ({
-            ...group,
-            memberIds: group.memberIds.filter((memberId) => memberId !== tab.selection?.id),
-          })),
         });
         break;
       case "edge":
         onChange({
-          ...tab.graph,
-          edges: tab.graph.edges.filter((edge) => edge.id !== tab.selection?.id),
-        });
-        break;
-      case "group":
-        onChange({
-          ...tab.graph,
-          groups: tab.graph.groups.filter((group) => group.id !== tab.selection?.id),
-        });
-        break;
-      case "comment":
-        onChange({
-          ...tab.graph,
-          comments: (tab.graph.comments ?? []).filter((comment) => comment.id !== tab.selection?.id),
+          ...graph,
+          edges: graph.edges.filter((edge) => edge.id !== tab.selection?.id),
         });
         break;
     }
@@ -1612,78 +1557,187 @@ function GraphEditorPane(props: {
 
   return (
     <div className="graph-pane">
-      <div className="graph-toolbar">
-        <button onClick={addNode}>Add Node</button>
-        <button onClick={addGroup}>Add Group</button>
-        <button onClick={addComment}>Add Comment</button>
-        <button onClick={deleteSelection} disabled={!tab.selection}>
-          Delete Selection
-        </button>
+      <div className="graph-toolbar graph-toolbar--builder">
+        <div className="graph-toolbar-copy">
+          <div className="graph-toolbar-title">Click or drag onto canvas</div>
+          <div className="graph-toolbar-subtitle">
+            Click to add a node in view, or drag it onto an exact spot in the graph.
+          </div>
+        </div>
+        <div className="toolbar">
+          <button
+            onClick={() => {
+              if (!flowInstance || graph.nodes.length === 0) {
+                return;
+              }
+              flowInstance.fitView({
+                nodes: graph.nodes.map((node) => ({ id: node.id })),
+                padding: 0.24,
+                duration: 180,
+                maxZoom: 1.1,
+              });
+            }}
+            disabled={!flowInstance || graph.nodes.length === 0}
+          >
+            Reset View
+          </button>
+          <button onClick={deleteSelection} disabled={!tab.selection}>
+            Delete Selection
+          </button>
+        </div>
       </div>
 
-      <div className="graph-canvas">
-        <ReactFlow
-          nodes={reactNodes}
-          edges={reactEdges}
-          nodeTypes={graphNodeTypes}
-          onNodesChange={handleNodesChange}
-          onEdgesChange={handleEdgesChange}
-          onConnect={handleConnect}
-          onNodeClick={(_event, node) => {
-            onSelectionChange(nodeSelectionFromCanvasNode(node as CanvasNode));
-          }}
-          onEdgeClick={(_event, edge) => {
-            onSelectionChange({ kind: "edge", id: edge.id });
-          }}
-          onSelectionChange={({ nodes, edges }) => {
-            const selectedNode = nodes.at(0) as CanvasNode | undefined;
-            const selectedEdge = edges.at(0);
-            if (selectedNode) {
-              onSelectionChange(nodeSelectionFromCanvasNode(selectedNode));
-            } else if (selectedEdge) {
-              onSelectionChange({ kind: "edge", id: selectedEdge.id });
-            } else {
-              onSelectionChange(null);
+      <div className="graph-builder">
+        <aside className="graph-palette">
+          {[
+            {
+              kind: "node" as const,
+              title: "Node",
+              description: "Components, concepts, interfaces",
+            },
+          ].map((item) => (
+            <button
+              key={item.kind}
+              className={`graph-palette-item ${draggingKind === item.kind ? "dragging" : ""}`}
+              draggable
+              onClick={() => {
+                const position = getQuickAddPosition();
+                addNodeAtPosition(position.x, position.y);
+              }}
+              onDragStart={(event) => {
+                event.dataTransfer.setData("application/x-planner-graph-item", item.kind);
+                event.dataTransfer.effectAllowed = "copy";
+                setDraggingKind(item.kind);
+              }}
+              onDragEnd={() => setDraggingKind(null)}
+            >
+              <span className="graph-palette-item__title">{item.title}</span>
+              <span className="graph-palette-item__description">{item.description}</span>
+            </button>
+          ))}
+        </aside>
+
+        <div
+          ref={canvasRef}
+          className={`graph-canvas ${draggingKind ? "drag-active" : ""}`}
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes("application/x-planner-graph-item")) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
             }
           }}
-          proOptions={{ hideAttribution: true }}
-          fitView
-        >
-          <Background color="rgba(255,255,255,0.08)" gap={24} />
-          <MiniMap pannable zoomable />
-          <Controls />
-        </ReactFlow>
-      </div>
+          onDrop={(event) => {
+            const droppedKind = event.dataTransfer.getData("application/x-planner-graph-item") as
+              | GraphPaletteKind
+              | "";
+            if (!droppedKind) {
+              return;
+            }
 
-      <div className="graph-supporting">
-        <section>
-          <h3>Groups</h3>
-          {(tab.graph.groups.length > 0 ? tab.graph.groups : []).map((group) => (
-            <button
-              key={group.id}
-              className={`supporting-row ${tab.selection?.kind === "group" && tab.selection.id === group.id ? "selected" : ""}`}
-              onClick={() => onSelectionChange({ kind: "group", id: group.id })}
-            >
-              {group.label}
-            </button>
-          ))}
-          {tab.graph.groups.length === 0 ? <div className="empty-inline">No groups yet.</div> : null}
-        </section>
-        <section>
-          <h3>Comments</h3>
-          {(tab.graph.comments ?? []).map((comment) => (
-            <button
-              key={comment.id}
-              className={`supporting-row ${tab.selection?.kind === "comment" && tab.selection.id === comment.id ? "selected" : ""}`}
-              onClick={() => onSelectionChange({ kind: "comment", id: comment.id })}
-            >
-              {comment.body}
-            </button>
-          ))}
-          {(tab.graph.comments ?? []).length === 0 ? (
-            <div className="empty-inline">No comments yet.</div>
+            event.preventDefault();
+            const position = getDropPosition(event.nativeEvent);
+            addNodeAtPosition(position.x, position.y);
+            setDraggingKind(null);
+          }}
+        >
+          {draggingKind ? (
+            <div className="graph-drop-hint">Release to add a {draggingKind} here</div>
           ) : null}
-        </section>
+          <ReactFlow
+            nodes={reactNodes}
+            edges={reactEdges}
+            nodeTypes={graphNodeTypes}
+            onInit={setFlowInstance}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={handleEdgesChange}
+            onConnect={handleConnect}
+            onNodeClick={(_event, node) => {
+              onSelectionChange(nodeSelectionFromCanvasNode(node as CanvasNode));
+            }}
+            onEdgeClick={(_event, edge) => {
+              onSelectionChange({ kind: "edge", id: edge.id });
+            }}
+            onSelectionChange={(selection) => {
+              const nodes = selection?.nodes ?? [];
+              const edges = selection?.edges ?? [];
+              const selectedNode = nodes.at(0) as CanvasNode | undefined;
+              const selectedEdge = edges.at(0);
+              if (selectedNode) {
+                onSelectionChange(nodeSelectionFromCanvasNode(selectedNode));
+              } else if (selectedEdge) {
+                onSelectionChange({ kind: "edge", id: selectedEdge.id });
+              } else {
+                onSelectionChange(null);
+              }
+            }}
+            onMoveEnd={(_event, viewport) => {
+              onChange({
+                ...graph,
+                viewport,
+              });
+            }}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background color="rgba(255,255,255,0.08)" gap={24} />
+            <MiniMap pannable zoomable />
+            <Controls />
+          </ReactFlow>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GraphFallbackPane(props: {
+  tab: GraphTabState;
+  error: Error;
+  onApplyGraph: (graph: PlannerGraph) => void;
+  onRetryCanvas: () => void;
+}) {
+  const { tab, error, onApplyGraph, onRetryCanvas } = props;
+  const [rawValue, setRawValue] = useState(() => JSON.stringify(normalizeGraph(tab.graph), null, 2));
+  const [parseError, setParseError] = useState<string>();
+
+  useEffect(() => {
+    setRawValue(JSON.stringify(normalizeGraph(tab.graph), null, 2));
+    setParseError(undefined);
+  }, [tab.graph, tab.path, tab.revision]);
+
+  const applyRawGraph = () => {
+    try {
+      const parsed = JSON.parse(rawValue) as PlannerGraph;
+      onApplyGraph(normalizeGraph(parsed));
+      setParseError(undefined);
+    } catch (parseFailure) {
+      setParseError(
+        parseFailure instanceof Error ? parseFailure.message : "Failed to parse graph JSON.",
+      );
+    }
+  };
+
+  return (
+    <div className="graph-pane">
+      <div className="banner error">
+        <div>
+          The graph canvas crashed while rendering this entry. You can keep working in raw JSON and retry
+          the canvas after applying changes.
+          <div className="error-detail">{error.message || "Unknown graph rendering error."}</div>
+        </div>
+        <div className="toolbar">
+          <button onClick={onRetryCanvas}>Retry Canvas</button>
+          <button className="primary" onClick={applyRawGraph}>
+            Apply JSON
+          </button>
+        </div>
+      </div>
+      {parseError ? <div className="banner warning">{parseError}</div> : null}
+      <div className="graph-json-fallback">
+        <textarea
+          aria-label="Graph JSON editor"
+          className="code-area raw-graph-editor"
+          value={rawValue}
+          onChange={(event) => setRawValue(event.target.value)}
+        />
       </div>
     </div>
   );
@@ -1731,14 +1785,6 @@ function InspectorPane(props: {
   const selectedEdge =
     tab.kind === "graph" && tab.selection?.kind === "edge"
       ? tab.graph.edges.find((edge) => edge.id === tab.selection?.id)
-      : undefined;
-  const selectedGroup =
-    tab.kind === "graph" && tab.selection?.kind === "group"
-      ? tab.graph.groups.find((group) => group.id === tab.selection?.id)
-      : undefined;
-  const selectedComment =
-    tab.kind === "graph" && tab.selection?.kind === "comment"
-      ? tab.graph.comments?.find((comment) => comment.id === tab.selection?.id)
       : undefined;
 
   return (
@@ -1951,6 +1997,29 @@ function InspectorPane(props: {
                 />
               </label>
               <label>
+                Metadata (JSON)
+                <textarea
+                  className="code-area"
+                  value={selectedEdge.metadata ? JSON.stringify(selectedEdge.metadata, null, 2) : ""}
+                  onChange={(event) =>
+                    updateGraphSelection((currentTab) => ({
+                      ...currentTab,
+                      graph: {
+                        ...currentTab.graph,
+                        edges: currentTab.graph.edges.map((edge) =>
+                          edge.id === selectedEdge.id
+                            ? {
+                                ...edge,
+                                metadata: updateJsonField(edge.metadata, event.target.value),
+                              }
+                            : edge,
+                        ),
+                      },
+                    }))
+                  }
+                />
+              </label>
+              <label>
                 Annotations (JSON)
                 <textarea
                   className="code-area"
@@ -1976,234 +2045,9 @@ function InspectorPane(props: {
             </div>
           ) : null}
 
-          {selectedGroup ? (
-            <div className="selection-editor">
-              <label>
-                Label
-                <input
-                  value={selectedGroup.label}
-                  onChange={(event) =>
-                    updateGraphSelection((currentTab) => ({
-                      ...currentTab,
-                      graph: {
-                        ...currentTab.graph,
-                        groups: currentTab.graph.groups.map((group) =>
-                          group.id === selectedGroup.id ? { ...group, label: event.target.value } : group,
-                        ),
-                      },
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Color
-                <input
-                  value={selectedGroup.color ?? ""}
-                  onChange={(event) =>
-                    updateGraphSelection((currentTab) => ({
-                      ...currentTab,
-                      graph: {
-                        ...currentTab.graph,
-                        groups: currentTab.graph.groups.map((group) =>
-                          group.id === selectedGroup.id ? { ...group, color: event.target.value } : group,
-                        ),
-                      },
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Member IDs (comma-separated)
-                <input
-                  value={selectedGroup.memberIds.join(", ")}
-                  onChange={(event) =>
-                    updateGraphSelection((currentTab) => ({
-                      ...currentTab,
-                      graph: {
-                        ...currentTab.graph,
-                        groups: currentTab.graph.groups.map((group) =>
-                          group.id === selectedGroup.id
-                            ? {
-                                ...group,
-                                memberIds: event.target.value
-                                  .split(",")
-                                  .map((value) => value.trim())
-                                  .filter(Boolean),
-                              }
-                            : group,
-                        ),
-                      },
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Annotations (JSON)
-                <textarea
-                  className="code-area"
-                  value={selectedGroup.annotations ? JSON.stringify(selectedGroup.annotations, null, 2) : ""}
-                  onChange={(event) =>
-                    updateGraphSelection((currentTab) => ({
-                      ...currentTab,
-                      graph: {
-                        ...currentTab.graph,
-                        groups: currentTab.graph.groups.map((group) =>
-                          group.id === selectedGroup.id
-                            ? {
-                                ...group,
-                                annotations: updateJsonField(group.annotations, event.target.value),
-                              }
-                            : group,
-                        ),
-                      },
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Metadata (JSON)
-                <textarea
-                  className="code-area"
-                  value={selectedGroup.metadata ? JSON.stringify(selectedGroup.metadata, null, 2) : ""}
-                  onChange={(event) =>
-                    updateGraphSelection((currentTab) => ({
-                      ...currentTab,
-                      graph: {
-                        ...currentTab.graph,
-                        groups: currentTab.graph.groups.map((group) =>
-                          group.id === selectedGroup.id
-                            ? {
-                                ...group,
-                                metadata: updateJsonField(group.metadata, event.target.value),
-                              }
-                            : group,
-                        ),
-                      },
-                    }))
-                  }
-                />
-              </label>
-            </div>
-          ) : null}
-
-          {selectedComment ? (
-            <div className="selection-editor">
-              <label>
-                Body
-                <textarea
-                  value={selectedComment.body}
-                  onChange={(event) =>
-                    updateGraphSelection((currentTab) => ({
-                      ...currentTab,
-                      graph: {
-                        ...currentTab.graph,
-                        comments: (currentTab.graph.comments ?? []).map((comment) =>
-                          comment.id === selectedComment.id
-                            ? {
-                                ...comment,
-                                body: event.target.value,
-                              }
-                            : comment,
-                        ),
-                      },
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Color
-                <input
-                  value={selectedComment.color ?? ""}
-                  onChange={(event) =>
-                    updateGraphSelection((currentTab) => ({
-                      ...currentTab,
-                      graph: {
-                        ...currentTab.graph,
-                        comments: (currentTab.graph.comments ?? []).map((comment) =>
-                          comment.id === selectedComment.id
-                            ? {
-                                ...comment,
-                                color: event.target.value,
-                              }
-                            : comment,
-                        ),
-                      },
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Position
-                <div className="inline-fields">
-                  <input
-                    value={selectedComment.x}
-                    onChange={(event) =>
-                      updateGraphSelection((currentTab) => ({
-                        ...currentTab,
-                        graph: {
-                          ...currentTab.graph,
-                          comments: (currentTab.graph.comments ?? []).map((comment) =>
-                            comment.id === selectedComment.id
-                              ? {
-                                  ...comment,
-                                  x: Number(event.target.value) || 0,
-                                }
-                              : comment,
-                          ),
-                        },
-                      }))
-                    }
-                  />
-                  <input
-                    value={selectedComment.y}
-                    onChange={(event) =>
-                      updateGraphSelection((currentTab) => ({
-                        ...currentTab,
-                        graph: {
-                          ...currentTab.graph,
-                          comments: (currentTab.graph.comments ?? []).map((comment) =>
-                            comment.id === selectedComment.id
-                              ? {
-                                  ...comment,
-                                  y: Number(event.target.value) || 0,
-                                }
-                              : comment,
-                          ),
-                        },
-                      }))
-                    }
-                  />
-                </div>
-              </label>
-              <label>
-                Metadata (JSON)
-                <textarea
-                  className="code-area"
-                  value={selectedComment.metadata ? JSON.stringify(selectedComment.metadata, null, 2) : ""}
-                  onChange={(event) =>
-                    updateGraphSelection((currentTab) => ({
-                      ...currentTab,
-                      graph: {
-                        ...currentTab.graph,
-                        comments: (currentTab.graph.comments ?? []).map((comment) =>
-                          comment.id === selectedComment.id
-                            ? {
-                                ...comment,
-                                metadata: updateJsonField(comment.metadata, event.target.value),
-                              }
-                            : comment,
-                        ),
-                      },
-                    }))
-                  }
-                />
-              </label>
-            </div>
-          ) : null}
-
-          {!selectedNode && !selectedEdge && !selectedGroup && !selectedComment ? (
+          {!selectedNode && !selectedEdge ? (
             <div className="empty-inline">
-              Select a node, edge, group, or comment to edit graph annotations and metadata.
+              Select a node or edge to edit graph annotations and metadata.
             </div>
           ) : null}
         </section>

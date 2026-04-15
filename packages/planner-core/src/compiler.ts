@@ -6,7 +6,6 @@ import type {
   PlannerEntry,
   PlannerGraphEdge,
   PlannerGraphEntry,
-  PlannerGraphGroup,
   PlannerGraphNode,
   ProjectContextResult,
 } from "./types.js";
@@ -117,17 +116,17 @@ function toRelationshipFromEdge(
 
 function toItemFromGraph(
   graph: PlannerGraphEntry,
-  item: PlannerGraphNode | PlannerGraphGroup,
+  item: PlannerGraphNode,
   kind: string,
   index: number,
 ): CompiledItem {
   return {
     id: `${graph.path}:${kind}:${index}:${item.id}`,
     title: item.label,
-    detail: "body" in item ? item.body : undefined,
+    detail: item.body,
     source: {
       path: graph.path,
-      kind: "body" in item ? "node" : "group",
+      kind: "node",
       id: item.id,
       title: graph.title,
     },
@@ -166,24 +165,7 @@ export function compileProjectContext(entries: PlannerEntry[]): ProjectContextRe
   }
 
   for (const graph of graphs) {
-    entities.push(
-      ...graph.graph.nodes.map((node) => toEntityFromNode(graph, node)),
-      ...graph.graph.groups.map((group) => ({
-        id: `${graph.path}#group:${group.id}`,
-        name: group.label,
-        kind:
-          (typeof group.annotations?.kind === "string" && group.annotations.kind) ||
-          classifyText(group.label)[0] ||
-          "group",
-        annotations: group.annotations,
-        source: {
-          path: graph.path,
-          kind: "group" as const,
-          id: group.id,
-          title: graph.title,
-        },
-      })),
-    );
+    entities.push(...graph.graph.nodes.map((node) => toEntityFromNode(graph, node)));
     relationships.push(...graph.graph.edges.map((edge) => toRelationshipFromEdge(graph, edge)));
 
     graph.graph.nodes.forEach((node, index) => {
@@ -231,7 +213,6 @@ export function compileProjectContext(entries: PlannerEntry[]): ProjectContextRe
       updatedAt: graph.metadata.updatedAt,
       nodes: graph.graph.nodes,
       edges: graph.graph.edges,
-      groups: graph.graph.groups,
     })),
     entities,
     relationships,
